@@ -1,0 +1,25 @@
+[project]
+name = "medical-mcq-generator"
+version = "0.1.0"
+description = "Verifiable Medical MCQ Generator with provenance tracking"
+requires-python = ">=3.10"
+dependencies = [
+    "google-adk>=1.19.0",
+    "gradio>=4.0.0",
+    "pydantic>=2.7.4",
+    "pydantic-settings>=2.4.0",
+    "sqlalchemy>=2.0.32",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.3",
+    "pyyaml>=6.0.1",
+    "openai>=1.40.0",
+    "pytest>=8.3.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+

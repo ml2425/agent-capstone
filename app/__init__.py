@@ -1,0 +1,1 @@
+"""Medical MCQ Generator Application"""

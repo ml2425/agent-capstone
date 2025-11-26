@@ -1,6 +1,6 @@
 # Core orchestration stack
 google-adk>=1.19.0
-chainlit>=1.0.0
+gradio>=4.0.0
 
 # Data modeling and validation
 pydantic>=2.7.4

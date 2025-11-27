@@ -19,6 +19,7 @@ class Source(Base):
     
     triplets: Mapped[list["Triplet"]] = relationship(back_populates="source")
     mcqs: Mapped[list["MCQRecord"]] = relationship(back_populates="source")
+    pending_entries: Mapped[list["PendingSource"]] = relationship(back_populates="source")
 
 
 class Triplet(Base):
@@ -57,4 +58,14 @@ class MCQRecord(Base):
     
     source: Mapped["Source"] = relationship(back_populates="mcqs")
     triplet: Mapped["Triplet"] = relationship(back_populates="mcqs")
+
+
+class PendingSource(Base):
+    __tablename__ = "pending_sources"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), unique=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+
+    source: Mapped["Source"] = relationship(back_populates="pending_entries")
 

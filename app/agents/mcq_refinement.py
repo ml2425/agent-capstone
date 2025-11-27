@@ -72,7 +72,7 @@ mcq_refinement_loop = LoopAgent(
 
 def set_refinement_model(model) -> None:
     """Apply the provided LLM model to refinement agents."""
-    agents = [mcq_writer, mcq_critic, mcq_refiner, mcq_refinement_loop]
+    agents = [mcq_writer, mcq_critic, mcq_refiner]
     for agent in agents:
         agent.model = model
 

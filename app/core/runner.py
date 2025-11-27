@@ -7,7 +7,7 @@ from typing import Optional, Any
 import time
 
 from app.core.llm_manager import llm_manager
-from app.agents.pipeline import set_pipeline_model
+from app.agents.pipeline import set_pipeline_model, set_distractor_tool
 from app.agents.mcq_refinement import set_refinement_model
 
 
@@ -36,9 +36,11 @@ async def run_agent(
         session_id = await create_new_session(user_id)
     
     # Apply the selected model across the pipeline and refinement loop.
-    model = llm_manager.get_model(model_id)
+    config = llm_manager.get_config(model_id)
+    model = llm_manager.get_model(config.identifier)
     set_pipeline_model(model)
     set_refinement_model(model)
+    set_distractor_tool(config.provider)
     
     query_content = types.Content(
         role="user",

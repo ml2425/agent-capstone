@@ -1,7 +1,15 @@
 # UI Implementation Plan: Verifiable Medical MCQ Generator
 
+> **⚠️ NOTE: This document is HISTORICAL - It was written for Chainlit but we implemented with Gradio instead.**
+> 
+> **For current implementation:** See `ui_display_boxes.md` for visual reference (framework-agnostic).
+> 
+> **This document is kept for:** Historical reference, design decisions, and as a template if switching frameworks.
+
 ## Overview
 This document outlines the complete UI structure for the Chainlit-based interface. The UI will be built using Chainlit 2.9.2 API, with a focus on skeleton/placeholder implementation first, followed by full functionality.
+
+**Current Status:** UI implemented with Gradio (see `app/ui/gradio_app.py`). This document preserved for reference.
 
 **Key Requirements:**
 - Default LLM: ChatGPT 4o

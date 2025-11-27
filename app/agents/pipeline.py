@@ -1,6 +1,6 @@
 """SequentialAgent pipeline for MCQ generation."""
-from google.adk import Agent, SequentialAgent
-from google.adk.models import Gemini
+from google.adk.agents import Agent, SequentialAgent
+from google.adk.models.google_llm import Gemini
 from app.tools.pubmed_tools import pubmed_search_tool, pubmed_fetch_tool
 from app.tools.schema_validator import schema_validator_tool
 from app.tools.kb_tools import kb_query_tool, kb_get_approved_tool

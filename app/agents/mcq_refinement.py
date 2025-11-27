@@ -1,7 +1,7 @@
 """LoopAgent for MCQ refinement."""
-from google.adk import Agent, LoopAgent
+from google.adk.agents import Agent, LoopAgent
 from google.adk.tools import FunctionTool
-from google.adk.models import Gemini
+from google.adk.models.google_llm import Gemini
 from typing import Dict
 
 

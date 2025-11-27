@@ -1,6 +1,5 @@
 """App configuration with context compaction."""
-from google.adk import App
-from google.adk.config import EventsCompactionConfig
+from google.adk.apps.app import App, EventsCompactionConfig
 from app.agents.pipeline import mcq_pipeline
 from app.core.session import session_service
 

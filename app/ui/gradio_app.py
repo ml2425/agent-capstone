@@ -34,7 +34,13 @@ from app.services.gemini_mcq_service import (
     generate_mcq_with_triplets,
     regenerate_mcq_with_feedback,
 )
+from app.services.media_service import (
+    save_image,
+    get_image_path,
+    load_image_bytes,
+)
 from sqlalchemy.orm import Session
+from sqlalchemy import String
 
 
 def handle_pending_navigation(direction: int, current_page: int) -> Tuple[str, int, str]:
@@ -144,6 +150,9 @@ current_session_id = None
 
 # In-memory cache for MCQ drafts keyed by source_id
 pending_mcq_cache: Dict[int, Dict[str, Any]] = {}
+
+# In-memory cache for generated image bytes keyed by mcq_id
+pending_image_cache: Dict[int, bytes] = {}
 
 
 async def get_or_create_session() -> str:
@@ -977,42 +986,294 @@ def handle_accept_visual_prompt(mcq_id: Optional[int], visual_prompt: str) -> st
         db.close()
 
 
-def search_stored_mcqs(query: str) -> str:
-    """Search stored MCQs by title, identifier, or question text."""
-    query = (query or "").strip()
+def _list_stored_mcqs(page: int = 1, page_size: int = 10, query: Optional[str] = None) -> Tuple[List[Tuple[MCQRecord, Source, Optional[Triplet]]], int]:
+    """Return paginated stored MCQs with optional search."""
     db = SessionLocal()
     try:
         q = (
-            db.query(MCQRecord, Source)
+            db.query(MCQRecord, Source, Triplet)
             .join(Source, MCQRecord.source_id == Source.id)
+            .outerjoin(Triplet, MCQRecord.triplet_id == Triplet.id)
         )
+        
         if query:
             like_term = f"%{query}%"
             q = q.filter(
                 (Source.source_id.ilike(like_term))
                 | (Source.title.ilike(like_term))
+                | (Source.authors.ilike(like_term))
                 | (MCQRecord.question.ilike(like_term))
+                | (MCQRecord.stem.ilike(like_term))
+                | (Source.publication_year.cast(String).ilike(like_term))
             )
-        results = q.order_by(MCQRecord.created_at.desc()).limit(10).all()
-        if not results:
-            return "No records found."
+        
+        total = q.count()
+        total_pages = max(1, math.ceil(total / page_size)) if total else 1
+        page = max(1, min(page, total_pages))
+        
+        results = (
+            q.order_by(MCQRecord.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return results, total_pages
+    finally:
+        db.close()
 
-        lines = []
-        for mcq, source in results:
-            options = json.loads(mcq.options)
-            options_text = "\n".join(
-                f"{chr(65+idx)}) {opt}" for idx, opt in enumerate(options)
-            )
-            lines.append(
-                f"**{source.title or 'Untitled'} ({source.source_id})**\n"
-                f"- MCQ ID: {mcq.id}\n"
-                f"- Question: {mcq.question}\n"
-                f"- Correct Option: {chr(65 + mcq.correct_option)}\n"
-                f"- Visual Prompt: {mcq.visual_prompt or '*Not set*'}\n"
-                f"- Options:\n{options_text}\n"
-                "---"
-            )
+
+def render_kb_list(page: int = 1, query: Optional[str] = None) -> Tuple[str, int, str]:
+    """Render Knowledge Base list with pagination."""
+    results, total_pages = _list_stored_mcqs(page, 10, query)
+    
+    if not results:
+        return "*No MCQs found.*", 1, "Page 1/1"
+    
+    lines = ["### Stored MCQs\n"]
+    for mcq, source, triplet in results:
+        year = source.publication_year or "Year N/A"
+        authors = source.authors or "Authors N/A"
+        title = source.title or "Untitled"
+        lines.append(
+            f"**{title}** ({year})\n"
+            f"- **PMID/ID:** {source.source_id}\n"
+            f"- **Authors:** {authors}\n"
+            f"- **MCQ ID:** {mcq.id}\n"
+            f"- **Question:** {mcq.question[:100]}{'...' if len(mcq.question) > 100 else ''}\n"
+            f"- **Status:** {mcq.status}\n"
+            f"- **Created:** {mcq.created_at.strftime('%Y-%m-%d %H:%M') if mcq.created_at else 'N/A'}\n"
+            f"- **Click to view details**\n"
+            "---\n"
+        )
+    
+    info = f"Page {page}/{total_pages} ({len(results)} shown)"
+    return "\n".join(lines), page, info
+
+
+def search_stored_mcqs(query: str) -> Tuple[str, int, str]:
+    """Search stored MCQs by various criteria."""
+    query = (query or "").strip()
+    return render_kb_list(1, query if query else None)
+
+
+def get_mcq_detail(mcq_id: int) -> Tuple[str, str, Optional[gr.Image], str]:
+    """Get detailed view of an MCQ including triplets, visual prompt, and image."""
+    db = SessionLocal()
+    try:
+        result = (
+            db.query(MCQRecord, Source, Triplet)
+            .join(Source, MCQRecord.source_id == Source.id)
+            .outerjoin(Triplet, MCQRecord.triplet_id == Triplet.id)
+            .filter(MCQRecord.id == mcq_id)
+            .first()
+        )
+        
+        if not result:
+            return "*MCQ not found.*", "", gr.update(visible=False, value=None), ""
+        
+        mcq, source, triplet = result
+        
+        # Format MCQ
+        options = json.loads(mcq.options)
+        options_text = "\n".join(
+            f"{'✓' if idx == mcq.correct_option else ' '} {chr(65+idx)}) {opt}"
+            for idx, opt in enumerate(options)
+        )
+        
+        year = source.publication_year or "Year N/A"
+        authors = source.authors or "Authors N/A"
+        
+        mcq_html = f"""
+## MCQ Details (ID: {mcq.id})
+
+### Source Information
+- **Title:** {source.title or 'Untitled'}
+- **PMID/ID:** {source.source_id}
+- **Authors:** {authors}
+- **Year:** {year}
+- **Status:** {mcq.status}
+
+### Clinical Stem
+{mcq.stem}
+
+### Question
+{mcq.question}
+
+### Options
+{options_text}
+
+### Visual Prompt
+{mcq.visual_prompt or '*Not set*'}
+"""
+        
+        # Format triplets
+        triplet_md = ""
+        if triplet:
+            context_sentences = _normalize_context_sentences(triplet.context_sentences)
+            triplet_md = f"""
+### Supporting Triplet (SNOMED-CT aligned)
+- **Subject:** {triplet.subject}
+- **Action:** {triplet.action}
+- **Object:** {triplet.object}
+- **Relation:** {triplet.relation}
+- **Context Sentences:**
+{chr(10).join(f"  - {s}" for s in context_sentences) if context_sentences else "  - None provided"}
+"""
+        else:
+            triplet_md = "*No triplet associated with this MCQ.*"
+        
+        # Load image if exists
+        image_display = gr.update(visible=False, value=None)
+        image_status = ""
+        if mcq.image_url:
+            image_path = get_image_path(mcq_id)
+            if image_path and image_path.exists():
+                try:
+                    image = Image.open(image_path)
+                    image_display = gr.update(value=image, visible=True)
+                    image_status = f"Image available: {mcq.image_url}"
+                except Exception:
+                    image_status = f"Image file exists but could not be loaded: {mcq.image_url}"
+            else:
+                image_status = f"Image path in DB but file not found: {mcq.image_url}"
+        else:
+            image_status = "No image stored for this MCQ."
+        
+        return mcq_html, triplet_md, image_display, image_status
+    finally:
+        db.close()
+
+
+def export_mcq_json(mcq_id: int) -> str:
+    """Export MCQ as JSON."""
+    db = SessionLocal()
+    try:
+        result = (
+            db.query(MCQRecord, Source, Triplet)
+            .join(Source, MCQRecord.source_id == Source.id)
+            .outerjoin(Triplet, MCQRecord.triplet_id == Triplet.id)
+            .filter(MCQRecord.id == mcq_id)
+            .first()
+        )
+        
+        if not result:
+            return "MCQ not found."
+        
+        mcq, source, triplet = result
+        export_data = {
+            "mcq_id": mcq.id,
+            "source": {
+                "id": source.id,
+                "source_id": source.source_id,
+                "title": source.title,
+                "authors": source.authors,
+                "year": source.publication_year,
+            },
+            "stem": mcq.stem,
+            "question": mcq.question,
+            "options": json.loads(mcq.options),
+            "correct_option": mcq.correct_option,
+            "visual_prompt": mcq.visual_prompt,
+            "status": mcq.status,
+            "created_at": mcq.created_at.isoformat() if mcq.created_at else None,
+        }
+        
+        if triplet:
+            export_data["triplet"] = {
+                "subject": triplet.subject,
+                "action": triplet.action,
+                "object": triplet.object,
+                "relation": triplet.relation,
+                "context_sentences": _normalize_context_sentences(triplet.context_sentences),
+            }
+        
+        if mcq.image_url:
+            export_data["image_path"] = mcq.image_url
+        
+        return json.dumps(export_data, indent=2)
+    finally:
+        db.close()
+
+
+def export_mcq_text(mcq_id: int) -> str:
+    """Export MCQ as plain text."""
+    db = SessionLocal()
+    try:
+        result = (
+            db.query(MCQRecord, Source, Triplet)
+            .join(Source, MCQRecord.source_id == Source.id)
+            .outerjoin(Triplet, MCQRecord.triplet_id == Triplet.id)
+            .filter(MCQRecord.id == mcq_id)
+            .first()
+        )
+        
+        if not result:
+            return "MCQ not found."
+        
+        mcq, source, triplet = result
+        options = json.loads(mcq.options)
+        
+        lines = [
+            f"MCQ ID: {mcq.id}",
+            f"Source: {source.title or 'Untitled'} ({source.source_id})",
+            f"Authors: {source.authors or 'N/A'}",
+            f"Year: {source.publication_year or 'N/A'}",
+            "",
+            f"Stem: {mcq.stem}",
+            "",
+            f"Question: {mcq.question}",
+            "",
+            "Options:",
+        ]
+        for idx, opt in enumerate(options):
+            marker = " [CORRECT]" if idx == mcq.correct_option else ""
+            lines.append(f"  {chr(65+idx)}) {opt}{marker}")
+        
+        if triplet:
+            lines.extend([
+                "",
+                "Triplet:",
+                f"  Subject: {triplet.subject}",
+                f"  Action: {triplet.action}",
+                f"  Object: {triplet.object}",
+                f"  Relation: {triplet.relation}",
+            ])
+        
+        if mcq.visual_prompt:
+            lines.extend(["", f"Visual Prompt: {mcq.visual_prompt}"])
+        
+        if mcq.image_url:
+            lines.extend(["", f"Image: {mcq.image_url}"])
+        
         return "\n".join(lines)
+    finally:
+        db.close()
+
+
+def open_mcq_in_builder(mcq_id: int) -> Tuple[str, str, str]:
+    """Prepare to open MCQ in Tab 2 (Builder) by selecting the source article."""
+    db = SessionLocal()
+    try:
+        mcq = db.query(MCQRecord).filter(MCQRecord.id == mcq_id).first()
+        if not mcq:
+            return "", "", "MCQ not found."
+        
+        source = db.query(Source).filter(Source.id == mcq.source_id).first()
+        if not source:
+            return "", "", "Source not found."
+        
+        # Check if source is in pending
+        pending = db.query(PendingSource).filter(PendingSource.source_id == source.id).first()
+        if not pending:
+            # Add to pending if not already there
+            db.add(PendingSource(source_id=source.id))
+            db.commit()
+        
+        # Format dropdown choice
+        year = source.publication_year or "Year N/A"
+        choice = f"{source.id} | {source.source_id} | {source.title or 'Untitled'} ({year})"
+        
+        return choice, f"Source {source.source_id} is now available in MCQ Builder. Switch to Tab 2 to continue.", ""
     finally:
         db.close()
 
@@ -1110,7 +1371,7 @@ async def handle_request_update(update_request: str, mcq_id_state: int, model_id
         return f"Error: {e}"
 
 
-def handle_generate_image(visual_prompt: str, image_size: str) -> Tuple[gr.Image, gr.Textbox, gr.Textbox]:
+def handle_generate_image(visual_prompt: str, image_size: str, mcq_id: Optional[int] = None) -> Tuple[gr.Image, gr.Textbox, gr.Textbox]:
     """Generate an image using Gemini from the provided prompt."""
     prompt = (visual_prompt or "").strip()
     if not prompt:
@@ -1131,6 +1392,9 @@ def handle_generate_image(visual_prompt: str, image_size: str) -> Tuple[gr.Image
 
     try:
         image = Image.open(BytesIO(result.image_bytes))
+        # Store image bytes in cache if mcq_id is provided
+        if mcq_id:
+            pending_image_cache[mcq_id] = result.image_bytes
     except Exception:
         return (
             gr.update(visible=False, value=None),
@@ -1141,8 +1405,44 @@ def handle_generate_image(visual_prompt: str, image_size: str) -> Tuple[gr.Image
     return (
         gr.update(value=image, visible=True),
         gr.update(value=result.size_used or size_value, visible=True),
-        gr.update(value="Image generated successfully.", visible=True),
+        gr.update(value="Image generated successfully. Click 'Accept Image' to save.", visible=True),
     )
+
+
+def handle_accept_image(mcq_id: Optional[int]) -> Tuple[str, gr.Image]:
+    """Accept and save the generated image to media folder and update database."""
+    if not mcq_id:
+        return "No MCQ selected. Accept an MCQ first.", gr.update(visible=False, value=None)
+    
+    image_bytes = pending_image_cache.get(mcq_id)
+    if not image_bytes:
+        return "No image generated yet. Generate an image first.", gr.update(visible=False, value=None)
+    
+    db = SessionLocal()
+    try:
+        mcq = db.query(MCQRecord).filter(MCQRecord.id == mcq_id).first()
+        if not mcq:
+            return "MCQ not found.", gr.update(visible=False, value=None)
+        
+        # Save image to media folder
+        image_path = save_image(mcq_id, image_bytes)
+        
+        # Update database
+        mcq.image_url = image_path
+        db.commit()
+        
+        # Remove from cache
+        pending_image_cache.pop(mcq_id, None)
+        
+        # Load and return the saved image
+        image_file = get_image_path(mcq_id)
+        if image_file and image_file.exists():
+            image = Image.open(image_file)
+            return f"Image saved to {image_path}", gr.update(value=image, visible=True)
+        else:
+            return f"Image saved to {image_path}", gr.update(visible=False, value=None)
+    finally:
+        db.close()
 
 
 def update_llm_model(model_id: str) -> Tuple[str, str]:
@@ -1420,9 +1720,21 @@ def _legacy_create_interface():
                 )
 
                 generate_image_btn.click(
-                    fn=handle_generate_image,
-                    inputs=[visual_prompt_display, image_size_input],
+                    fn=lambda prompt, size, mcq_id: handle_generate_image(prompt, size, mcq_id),
+                    inputs=[visual_prompt_display, image_size_input, mcq_id_state],
                     outputs=[image_display, image_size_input, image_action_status]
+                ).then(
+                    fn=lambda: gr.update(visible=True),
+                    outputs=accept_image_btn
+                )
+                
+                accept_image_btn.click(
+                    fn=lambda mcq_id: handle_accept_image(mcq_id),
+                    inputs=mcq_id_state,
+                    outputs=[image_action_status, image_display]
+                ).then(
+                    fn=lambda: gr.update(visible=False),
+                    outputs=accept_image_btn
                 )
 
                 request_update_btn.click(
@@ -1615,9 +1927,11 @@ def create_interface():
                             placeholder="e.g., 300x300 (default)",
                         )
                         generate_image_btn = gr.Button("Generate Image", variant="secondary")
+                        accept_image_btn = gr.Button("Accept Image", variant="primary", visible=False)
 
                         image_display = gr.Image(label="Generated Image", visible=False)
                         image_action_status = gr.Textbox(label="Image Status", interactive=False, visible=False)
+                        accept_image_btn = gr.Button("Accept Image", variant="primary", visible=False)
 
                 refresh_pending_articles_btn.click(
                     fn=load_pending_articles_dropdown,
@@ -1655,21 +1969,167 @@ def create_interface():
                 )
 
                 generate_image_btn.click(
-                    fn=handle_generate_image,
-                    inputs=[visual_prompt_display, image_size_input],
+                    fn=lambda prompt, size, mcq_id: handle_generate_image(prompt, size, mcq_id),
+                    inputs=[visual_prompt_display, image_size_input, mcq_id_state],
                     outputs=[image_display, image_size_input, image_action_status]
+                ).then(
+                    fn=lambda: gr.update(visible=True),
+                    outputs=accept_image_btn
+                )
+                
+                accept_image_btn.click(
+                    fn=lambda mcq_id: handle_accept_image(mcq_id),
+                    inputs=mcq_id_state,
+                    outputs=[image_action_status, image_display]
+                ).then(
+                    fn=lambda: gr.update(visible=False),
+                    outputs=accept_image_btn
                 )
 
             # Tab 3: Knowledge Base
             with gr.Tab("Knowledge Base"):
-                gr.Markdown("### Search Stored MCQs")
-                search_input = gr.Textbox(
-                    label="Search by PMID, filename, or title",
-                    placeholder="e.g., PMID:123456, stroke, pdf_abcd1234"
+                initial_kb_html, initial_kb_page, initial_kb_info = render_kb_list(1, None)
+                kb_page_state = gr.State(initial_kb_page)
+                
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        gr.Markdown("### Search Stored MCQs")
+                        kb_search_input = gr.Textbox(
+                            label="Search by PMID, title, authors, year, filename, or question text",
+                            placeholder="e.g., PMID:123456, stroke, 2023, pdf_abcd1234"
+                        )
+                        kb_search_btn = gr.Button("Search", variant="primary")
+                        kb_clear_btn = gr.Button("Clear Search", variant="secondary")
+                        
+                        gr.Markdown("---")
+                        gr.Markdown("### MCQ List")
+                        kb_list_display = gr.Markdown(value=initial_kb_html)
+                        kb_info = gr.Textbox(value=initial_kb_info, label="Pagination", interactive=False)
+                        with gr.Row():
+                            kb_prev_btn = gr.Button("◀ Prev", variant="secondary")
+                            kb_next_btn = gr.Button("Next ▶", variant="secondary")
+                        
+                        gr.Markdown("---")
+                        gr.Markdown("### View MCQ Details")
+                        kb_mcq_id_input = gr.Number(
+                            label="Enter MCQ ID to view details",
+                            value=None,
+                            precision=0,
+                            interactive=True
+                        )
+                        kb_view_btn = gr.Button("View Details", variant="primary")
+                        kb_open_builder_btn = gr.Button("Open in Builder", variant="secondary")
+                    
+                    with gr.Column(scale=3):
+                        gr.Markdown("### MCQ Details")
+                        kb_detail_display = gr.Markdown(value="*Select an MCQ ID and click 'View Details' to see full information.*")
+                        kb_triplet_display = gr.Markdown(value="")
+                        kb_image_display = gr.Image(label="MCQ Image", visible=False)
+                        kb_image_status = gr.Textbox(label="Image Status", interactive=False, visible=False)
+                        
+                        gr.Markdown("---")
+                        gr.Markdown("### Export Options")
+                        with gr.Row():
+                            kb_export_json_btn = gr.Button("Copy as JSON", variant="secondary")
+                            kb_export_text_btn = gr.Button("Copy as Text", variant="secondary")
+                        kb_export_display = gr.Textbox(
+                            label="Export Output",
+                            lines=10,
+                            visible=False,
+                            interactive=False
+                        )
+                        kb_mcq_id_state = gr.State(None)
+                
+                # Event handlers
+                def search_wrapper(query):
+                    html, page, info = search_stored_mcqs(query)
+                    return html, page, info
+                
+                def clear_search_wrapper():
+                    html, page, info = render_kb_list(1, None)
+                    return html, page, info, ""
+                
+                def navigate_kb(direction, current_page, current_query):
+                    new_page = max(1, current_page + direction)
+                    html, page, info = render_kb_list(new_page, current_query if current_query else None)
+                    return html, page, info
+                
+                def view_detail_wrapper(mcq_id):
+                    if not mcq_id:
+                        return (
+                            "*Please enter an MCQ ID.*",
+                            "",
+                            gr.update(visible=False, value=None),
+                            "",
+                            None
+                        )
+                    mcq_html, triplet_md, image_display, image_status = get_mcq_detail(int(mcq_id))
+                    return mcq_html, triplet_md, image_display, image_status, int(mcq_id)
+                
+                def export_json_wrapper(mcq_id):
+                    if not mcq_id:
+                        return gr.update(value="", visible=False)
+                    json_str = export_mcq_json(mcq_id)
+                    return gr.update(value=json_str, visible=True)
+                
+                def export_text_wrapper(mcq_id):
+                    if not mcq_id:
+                        return gr.update(value="", visible=False)
+                    text_str = export_mcq_text(mcq_id)
+                    return gr.update(value=text_str, visible=True)
+                
+                def open_builder_wrapper(mcq_id):
+                    if not mcq_id:
+                        return "", "", "Please enter an MCQ ID first."
+                    choice, status, _ = open_mcq_in_builder(mcq_id)
+                    return choice, status
+                
+                kb_search_btn.click(
+                    fn=search_wrapper,
+                    inputs=kb_search_input,
+                    outputs=[kb_list_display, kb_page_state, kb_info]
                 )
-                search_btn = gr.Button("Search Stored MCQs", variant="primary")
-                search_results_md = gr.Markdown(value="*Enter a query to search stored MCQs.*")
-                search_btn.click(fn=search_stored_mcqs, inputs=search_input, outputs=search_results_md)
+                
+                kb_clear_btn.click(
+                    fn=clear_search_wrapper,
+                    outputs=[kb_list_display, kb_page_state, kb_info, kb_search_input]
+                )
+                
+                kb_prev_btn.click(
+                    fn=lambda page, query: navigate_kb(-1, page, query),
+                    inputs=[kb_page_state, kb_search_input],
+                    outputs=[kb_list_display, kb_page_state, kb_info]
+                )
+                
+                kb_next_btn.click(
+                    fn=lambda page, query: navigate_kb(1, page, query),
+                    inputs=[kb_page_state, kb_search_input],
+                    outputs=[kb_list_display, kb_page_state, kb_info]
+                )
+                
+                kb_view_btn.click(
+                    fn=view_detail_wrapper,
+                    inputs=kb_mcq_id_input,
+                    outputs=[kb_detail_display, kb_triplet_display, kb_image_display, kb_image_status, kb_mcq_id_state]
+                )
+                
+                kb_export_json_btn.click(
+                    fn=export_json_wrapper,
+                    inputs=kb_mcq_id_state,
+                    outputs=kb_export_display
+                )
+                
+                kb_export_text_btn.click(
+                    fn=export_text_wrapper,
+                    inputs=kb_mcq_id_state,
+                    outputs=kb_export_display
+                )
+                
+                kb_open_builder_btn.click(
+                    fn=open_builder_wrapper,
+                    inputs=kb_mcq_id_input,
+                    outputs=[pending_article_dropdown, builder_article_status]
+                )
 
             # Tab 4: Placeholder
             with gr.Tab("Analytics (Coming Soon)"):

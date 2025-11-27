@@ -2,6 +2,12 @@
 MERGE.md
 docs/BRANCHES.md
 contents/
+plan/
+
+# === Test files ===
+test_readme.md
+test_agents_cli.py
+test_backend.py
 
 # === Dependency & build artifacts (good practice) ===
 .venv/

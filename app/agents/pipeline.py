@@ -5,6 +5,7 @@ from app.tools.pubmed_tools import pubmed_search_tool, pubmed_fetch_tool
 from app.tools.schema_validator import schema_validator_tool
 from app.tools.kb_tools import kb_query_tool, kb_get_approved_tool
 from app.tools.provenance_tools import provenance_verifier_tool
+from app.tools.tavily_search import tavily_search_tool
 from google.adk.tools import google_search
 
 
@@ -147,6 +148,45 @@ visual_refiner_agent = Agent(
 )
 
 
+# Zero-Triplet Fallback Agent
+zero_triplet_fallback_agent = Agent(
+    name="ZeroTripletFallbackAgent",
+    model=Gemini(model="gemini-2.5-flash-lite"),
+    instruction="""
+    You provide a safety net when FactExtractionAgent returns zero triplets.
+
+    1. Inspect prior outputs:
+       - If extracted_triplets contains one or more entries, respond with:
+         {"fallback_payload": null}
+       - Otherwise, continue.
+    2. Using source_payload.content (or any provided source text), draft ONE clinically sound provenance triplet:
+       {
+         "subject": ...,
+         "action": ...,
+         "object": ...,
+         "relation": <schema relation>,
+         "context_sentences": ["verbatim sentence 1", "verbatim sentence 2"]
+       }
+    3. From that triplet, craft exactly one MCQ with 5 options (index correct_option).
+    4. Include a lightweight provenance summary so a reviewer can verify the fallback.
+
+    Return JSON shape:
+    {
+      "fallback_triplet": {...},
+      "fallback_mcq": {
+        "stem": "...",
+        "question": "...",
+        "options": [...five items...],
+        "correct_option": 0,
+        "visual_kernel_draft": "...optional..."
+      },
+      "notes": "brief rationale"
+    }
+    """,
+    output_key="fallback_payload"
+)
+
+
 # SequentialAgent Pipeline
 mcq_pipeline = SequentialAgent(
     name="MCQPipeline",
@@ -155,7 +195,8 @@ mcq_pipeline = SequentialAgent(
         fact_extraction_agent,
         kb_management_agent,
         mcq_generation_agent,
-        visual_refiner_agent
+        visual_refiner_agent,
+        zero_triplet_fallback_agent,
     ]
 )
 
@@ -168,8 +209,26 @@ def set_pipeline_model(model) -> None:
         kb_management_agent,
         mcq_generation_agent,
         visual_refiner_agent,
+        zero_triplet_fallback_agent,
     ]
     for agent in agents:
         agent.model = model
-    mcq_pipeline.model = model
+
+
+def set_distractor_tool(provider: str) -> None:
+    """Configure distractor search tool based on provider."""
+    tools = [kb_query_tool]
+    if provider == "gemini":
+        tools.append(google_search)
+    elif provider == "openai":
+        tools.append(tavily_search_tool)
+    mcq_generation_agent.tools = tools
+
+
+def set_google_search_enabled(enabled: bool) -> None:
+    """Enable or disable Google Search tool for MCQ generation agent."""
+    tools = [kb_query_tool]
+    if enabled:
+        tools.append(google_search)
+    mcq_generation_agent.tools = tools
 

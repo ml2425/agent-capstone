@@ -66,9 +66,15 @@ class OpenAILlm(BaseLlm):
                 if part.text:
                     text_parts.append(part.text)
             if text_parts:
+                role = content.role or "user"
+                if role == "model":
+                    role = "assistant"
+                elif role not in {"system", "user", "assistant", "function", "tool", "developer"}:
+                    # fall back to user for any unsupported roles
+                    role = "user"
                 messages.append(
                     {
-                        "role": content.role or "user",
+                        "role": role,
                         "content": "\n".join(text_parts),
                     }
                 )

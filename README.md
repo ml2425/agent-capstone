@@ -2,30 +2,92 @@
 
 A production-ready system for generating high-quality, verifiable medical multiple-choice questions (MCQs) using Google Agent Development Kit (ADK) with human-in-the-loop validation.
 
-## Problem
+## Why This Project Exists
 
-Medical training programs need **small, trusted sets of multiple-choice questions** where every correct answer links back to a **verifiable source**. However:
+Clinical educators need reliable MCQs tied to real literature. Traditional workflows either take too long (manual writing) or produce hallucinated content (uncurated LLMs). The goal here is to keep humans in control while the agentic stack does the heavy lifting:
 
-- **Manual authoring is slow** and doesn't scale
-- **LLMs without guardrails hallucinate** facts and create unverifiable content
-- **Provenance tracking is missing** - you can't verify where answers came from
-- **Quality control is manual** and time-consuming
+- Every article (PubMed or PDF) is registered with provenance metadata.
+- MCQs are only produced when the reviewer explicitly requests them (no hidden processing).
+- Each draft carries at least one SNOMED-style triplet plus a full provenance trail.
+- Nothing is saved to the knowledge base until a human accepts both the MCQ and its visual prompt.
 
-This creates a critical gap: How do you generate medical MCQs at scale while ensuring **100% verifiable provenance**?
+## Current Architecture (High-Level)
 
-## Solution
+```
+Tab 1 (Source Intake)  -> Pending queue (SQLite + session cache)
+Tab 2 (MCQ Builder)    -> LLM calls (ChatGPT4o+Tavily or Gemini+Google)
+Tab 3 (Knowledge Base) -> Read-only search over approved MCQs
+```
 
-This application solves the problem through a **multi-agent pipeline** powered by **Google ADK** that:
+Behind the scenes:
 
-1. **Ingests sources** (PubMed articles or PDFs) with full provenance tracking
-2. **Extracts facts** as schema-constrained triplets with **verbatim context sentences** (2-4 sentences proving provenance)
-3. **Validates against medical ontology** before human review
-4. **Generates MCQs** from approved facts with automatic distractor generation
-5. **Refines quality** through iterative agent loops before human review
-6. **Enables human-in-the-loop** approval at every critical stage
-7. **Tracks everything** - every MCQ links back to source, triplet, and context sentences
+1. **LLM Manager** keeps provider/tool pairings safe (ChatGPT ↔ Tavily, Gemini ↔ Google Search).
+2. **Sequential Agent Pipeline** (Google ADK) handles on-demand MCQ + triplet extraction.
+3. **Database Session Service** keeps UI interactions stateful across restarts.
+4. **SQLite** stores sources, pending queue, triplets, MCQs, and visual prompts.
+5. **Gradio UI** orchestrates HITL review (no hidden threads or background processing).
 
-**Key Innovation:** Context sentences (verbatim quotes from source) prove triplets came from source material, not LLM imagination.
+## What’s Implemented Right Now
+
+- **Tab 1 – Source Intake**
+  - Search PubMed (top articles displayed with title + year) or upload a PDF.
+  - Selecting entries simply adds them to the pending queue; no LLM call happens yet.
+  - Queue supports pagination (6 per page) and bulk clear for quick clean-up.
+
+- **Tab 2 – MCQ Builder**
+  - Dropdown lists every pending article (title + year + PMID/file ID).
+  - “Generate MCQ Draft” makes a single pipeline call:
+    - MCQ (stem/question/5 options/correct index)
+    - Optimized visual prompt
+    - Supporting SNOMED-style triplets
+  - Optional reviewer feedback regenerates the draft in place.
+  - “Accept MCQ” persists both MCQ + triplets (and removes article from queue).
+  - “Accept Visual Prompt” ties the final text prompt to the stored MCQ.
+
+- **Tab 3 – Knowledge Base**
+  - Simple search bar (PMID, filename hash, title, or question text).
+  - Displays MCQ text, chosen answer, and stored visual prompt.
+  - Useful for auditing what’s already approved.
+
+## What’s Next
+
+- Progress streaming during long LLM calls so users see when a draft is in flight.
+- More granular provenance display (context sentences) inside the builder tab.
+- Ability to re-open stored MCQs for edits (currently read-only).
+- Optional image generation once prompts are accepted.
+
+## Running the App
+
+```bash
+uv venv && uv pip install -r requirements.txt
+cp .env.example .env  # fill in OPENAI_API_KEY / GOOGLE_API_KEY / TAVILY_API_KEY
+python app.py
+```
+
+The Gradio UI loads at `http://localhost:7860`.
+
+## Key Files
+
+- `app/ui/gradio_app.py` – All Gradio blocks + session glue.
+- `app/agents/pipeline.py` – Sequential agent definitions (ingest → MCQ → visual).
+- `app/core/llm_manager.py` – Provider registry + fallback logic.
+- `app/db/models.py` – Source, triplet, pending queue, MCQ schema.
+- `plan/docs/implementation_plan.md` – Technical roadmap (kept in sync).
+
+## FAQ
+
+**Why no auto-triplet extraction anymore?**  
+Speed + control. Reviewers wanted to pick one article, generate one MCQ, and iterate without waiting for the entire search result to finish. The pending queue gives instant feedback and defers heavy LLM calls to the builder tab.
+
+**Where do the triplets show up?**  
+Right now they’re displayed as markdown next to the MCQ draft (and stored automatically when you accept). Future work will add a richer transparency view.
+
+**What if I want the old auto-mode back?**  
+The legacy ADK flow is still documented in `plan/docs/implementation_plan.md`. We can re-enable it later, but the current prototype focuses on predictability and reviewer-driven actions.
+
+---
+
+Questions or ideas? Drop them in the issue tracker and reference the relevant tab/flow so we can keep iterating quickly. 👍
 
 ## Tech Stack
 
@@ -40,8 +102,8 @@ This application solves the problem through a **multi-agent pipeline** powered b
 - **[Pydantic](https://docs.pydantic.dev/)** - Data validation and settings management
 
 ### LLM Providers
-- **ChatGPT 4o mini** (default) – OpenAI GPT-4o mini via custom OpenAI LLM wrapper
-- **Gemini 2.5 Flash Lite** (optional) – Google Gemini 2.5 Flash Lite selectable from the UI
+- **ChatGPT 4o mini** (default) – OpenAI GPT-4o mini via custom OpenAI LLM wrapper. Uses Tavily Search for distractors.
+- **Gemini 2.5 Flash Lite** (optional) – Google Gemini 2.5 Flash Lite selectable from the UI. Uses Google Search for distractors.
 
 ### Database
 - **SQLite** - Persistent storage for sources, triplets, MCQs, and sessions
@@ -50,7 +112,7 @@ This application solves the problem through a **multi-agent pipeline** powered b
 
 This project implements **5 Google ADK features** (exceeding the 4+ requirement):
 
-### 1. SequentialAgent Orchestration ⭐ **CORE**
+### 1. SequentialAgent Orchestration  **CORE**
 **Location:** `app/agents/pipeline.py`
 
 Deterministic pipeline ensuring provenance and triplet IDs survive every hop:
@@ -61,7 +123,7 @@ MCQGenerationAgent → VisualRefinerAgent
 
 **Implementation:** Each agent passes structured data via `output_key`, ensuring predictable data handoff and auditable provenance.
 
-### 2. LoopAgent QA Wrapper ⭐ **CORE**
+### 2. LoopAgent QA Wrapper  **CORE**
 **Location:** `app/agents/mcq_refinement.py`
 
 Iterative MCQ refinement before human review:
@@ -72,7 +134,7 @@ Iterative MCQ refinement before human review:
 
 **Impact:** Reduces human review load by pre-filtering low-quality MCQs.
 
-### 3. DatabaseSessionService (Persistent Sessions) ⭐ **CORE**
+### 3. DatabaseSessionService (Persistent Sessions)  **CORE**
 **Location:** `app/core/session.py`
 
 Persistent session management across app restarts:
@@ -82,7 +144,7 @@ Persistent session management across app restarts:
 
 **Impact:** Users can resume work without re-uploading sources or losing context.
 
-### 4. Context Compaction ⭐ **EFFICIENCY**
+### 4. Context Compaction  **EFFICIENCY**
 **Location:** `app/core/app.py`
 
 Manages token usage in long sessions:
@@ -92,7 +154,7 @@ Manages token usage in long sessions:
 
 **Impact:** Enables long sessions with multiple sources/MCQs without token limit issues.
 
-### 5. Built-in Tools (Google Search) ⭐ **ENHANCEMENT**
+### 5. Built-in Tools (Google Search) **ENHANCEMENT**
 **Location:** `app/agents/pipeline.py` (MCQGenerationAgent)
 
 Fallback for distractor generation:
@@ -178,6 +240,9 @@ Fallback for distractor generation:
    # Optional: Enable Gemini fallback / Google Search tools
    GOOGLE_API_KEY=your_google_api_key_here
    
+   # Optional: Tavily search (used automatically when ChatGPT is active)
+   TAVILY_API_KEY=your_tavily_api_key_here
+   
    # Optional: For PubMed API (set your email)
    NCBI_EMAIL=your_email@example.com
    ```
@@ -204,18 +269,17 @@ The Gradio UI will be available at `http://localhost:7860`
 
 1. **Source Ingestion**
    - Search PubMed by keywords or upload PDF
-   - Select article to ingest
-   - System automatically extracts triplets
+   - Select article(s) to add them to the Pending Review queue (no LLM calls yet)
 
-2. **Triplet Review**
-   - Review extracted triplets with context sentences
-   - Verify provenance evidence
-   - Accept/Reject triplets (only accepted stored in KB)
+2. **MCQ Builder (Tab 2)**
+   - Select any pending article from the dropdown to request an MCQ on demand
+   - The builder prompts the LLM to return a 5-option MCQ plus supporting SNOMED-CT style triplets
+   - Provide natural-language feedback to regenerate, then accept to persist the MCQ (and triplets) into SQLite
+   - Edit or regenerate the visual prompt before accepting it into the database
 
-3. **MCQ Generation**
-   - Select approved triplet
-   - Generate MCQ (triggers agent pipeline)
-   - Review generated MCQ with provenance
+3. **Knowledge Base (Tab 3)**
+   - Search stored MCQs by PMID, filename, or title
+   - Review the accepted MCQ, options, and saved visual prompt at any time
 
 4. **MCQ Refinement**
    - Request updates from LLM
@@ -267,6 +331,13 @@ agent-capstone/
 - **Triplet Review**: Accept/Reject/Edit before storage
 - **MCQ Review**: Approve/Reject/Request Updates
 - **Visual Prompt Editing**: Edit optimized visual prompts before image generation
+- **Fallback Approvals**: Zero-triplet proposals stay queued in the UI until explicitly approved
+
+### AutoTripletFilter & Auto MCQ
+- **Auto filtering**: Articles that yield zero verified triplets are hidden (with fallback MCQs queued for approval)
+- **Duplicate-aware acceptance**: Triplets matching existing KB entries auto-accept to minimize reviewer load
+- **Auto MCQ generation**: Each verified triplet immediately spawns an MCQ + visual prompt so reviewers focus on approval, not orchestration
+- **Fallback queue**: Zero-triplet sources spawn a single MCQ + triplet that lives in the Triplet tab until approved or discarded
 
 ### Quality Assurance
 - **Schema Validation**: Triplets validated against medical ontology

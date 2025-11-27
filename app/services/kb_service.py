@@ -13,7 +13,8 @@ def upsert_triplet(
     relation: str,
     source_id: int,
     context_sentences: List[str],  # CRITICAL
-    schema_valid: bool = False
+    schema_valid: bool = False,
+    status: str = "pending",
 ) -> Triplet:
     """
     Store or update triplet in KB.
@@ -27,6 +28,7 @@ def upsert_triplet(
         source_id: Source database ID
         context_sentences: List of 2-4 verbatim context sentences (CRITICAL)
         schema_valid: Whether triplet passes schema validation
+        status: Workflow status (pending, accepted, rejected)
     
     Returns:
         Triplet model instance
@@ -44,6 +46,8 @@ def upsert_triplet(
         if context_sentences:
             existing.context_sentences = json.dumps(context_sentences)
         existing.schema_valid = schema_valid
+        if status:
+            existing.status = status
         db.commit()
         db.refresh(existing)
         return existing
@@ -57,7 +61,7 @@ def upsert_triplet(
         source_id=source_id,
         context_sentences=json.dumps(context_sentences),
         schema_valid=schema_valid,
-        status="pending"
+        status=status or "pending",
     )
     db.add(triplet)
     db.commit()

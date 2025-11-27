@@ -3,8 +3,13 @@ Main Gradio application for Medical MCQ Generator.
 Run with: python app.py
 """
 import gradio as gr
+from dotenv import load_dotenv
+
 from app.ui.gradio_app import create_interface
 from app.db.database import init_db
+
+# Load environment variables (OPENAI_API_KEY, GOOGLE_API_KEY, etc.)
+load_dotenv()
 
 # Initialize database on startup
 init_db()

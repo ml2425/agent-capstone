@@ -38,21 +38,21 @@ class LLMManager:
     def _register_default_configs(self) -> None:
         self.register_config(
             LLMConfig(
-                identifier="chatgpt_4o_mini",
-                label="ChatGPT 4o mini (default)",
-                provider="openai",
-                model_name="gpt-4o-mini",
-                description="OpenAI GPT-4o mini for fast, reliable HITL review.",
+                identifier="gemini_2_5_flash_lite",
+                label="Gemini 2.5 Flash Lite (default)",
+                provider="gemini",
+                model_name="gemini-2.5-flash-lite",
+                description="Google Gemini 2.5 Flash Lite for low-latency operations.",
                 default=True,
             )
         )
         self.register_config(
             LLMConfig(
-                identifier="gemini_2_5_flash_lite",
-                label="Gemini 2.5 Flash Lite",
-                provider="gemini",
-                model_name="gemini-2.5-flash-lite",
-                description="Google Gemini 2.5 Flash Lite for low-latency operations.",
+                identifier="chatgpt_4o_mini",
+                label="ChatGPT 4o mini",
+                provider="openai",
+                model_name="gpt-4o-mini",
+                description="OpenAI GPT-4o mini for fast, reliable HITL review.",
             )
         )
 

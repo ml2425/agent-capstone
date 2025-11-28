@@ -1,31 +1,9 @@
 """PDF ingestion and text extraction service."""
-from pypdf import PdfReader
-from io import BytesIO
 from typing import Dict
 from sqlalchemy.orm import Session
 from app.db.models import Source
 import hashlib
 from app.services.pdf_section_parser import chunk_pdf_by_sections
-
-
-def extract_pdf_text(pdf_bytes: bytes) -> str:
-    """
-    Extract text from PDF bytes.
-    
-    Args:
-        pdf_bytes: PDF file content as bytes
-    
-    Returns:
-        Extracted text string
-    """
-    try:
-        reader = PdfReader(BytesIO(pdf_bytes))
-        text = ""
-        for page in reader.pages:
-            text += page.extract_text() + "\n"
-        return text.strip()
-    except Exception as e:
-        raise ValueError(f"Failed to extract PDF text: {e}")
 
 
 def register_pdf_source(filename: str, pdf_bytes: bytes, db: Session) -> Dict:

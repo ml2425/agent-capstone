@@ -2,7 +2,8 @@
 Section configuration is easily modifiable for future changes."""
 import re
 from typing import List, Dict, Tuple
-from app.services.ingestion_service import extract_pdf_text
+from pypdf import PdfReader
+from io import BytesIO
 
 
 # ============================================================================
@@ -45,6 +46,30 @@ SECTION_PATTERNS: List[Tuple[str, str]] = [
 # Paragraph grouping for unknown sections
 # Number of paragraphs to group together (like PubMed abstract length)
 PARAGRAPHS_PER_CHUNK = 2
+
+
+# ============================================================================
+# PDF TEXT EXTRACTION
+# ============================================================================
+
+def extract_pdf_text(pdf_bytes: bytes) -> str:
+    """
+    Extract text from PDF bytes.
+    
+    Args:
+        pdf_bytes: PDF file content as bytes
+    
+    Returns:
+        Extracted text string
+    """
+    try:
+        reader = PdfReader(BytesIO(pdf_bytes))
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() + "\n"
+        return text.strip()
+    except Exception as e:
+        raise ValueError(f"Failed to extract PDF text: {e}")
 
 
 # ============================================================================

@@ -944,6 +944,7 @@ def handle_accept_mcq(source_choice: str, visual_prompt: str) -> Tuple[str, Opti
             if primary_triplet_id is None:
                 primary_triplet_id = stored_triplet.id
 
+        visual_prompt_text = (visual_prompt or "").strip()
         mcq = MCQRecord(
             stem=mcq_draft.get("stem", ""),
             question=mcq_draft.get("question", ""),
@@ -951,7 +952,7 @@ def handle_accept_mcq(source_choice: str, visual_prompt: str) -> Tuple[str, Opti
             correct_option=mcq_draft.get("correct_option", 0),
             source_id=source.id,
             triplet_id=primary_triplet_id,
-            visual_prompt=None,
+            visual_prompt=visual_prompt_text,
             status="pending",
         )
         db.add(mcq)
@@ -961,29 +962,84 @@ def handle_accept_mcq(source_choice: str, visual_prompt: str) -> Tuple[str, Opti
         pending_mcq_cache.pop(source_id, None)
         _remove_pending_source(source_id)
 
-        if visual_prompt.strip():
-            mcq.visual_prompt = visual_prompt.strip()
-            db.commit()
-            db.refresh(mcq)
-
         return f"MCQ accepted and stored with ID {mcq.id}.", mcq.id
     finally:
         db.close()
 
 
-def handle_accept_visual_prompt(mcq_id: Optional[int], visual_prompt: str) -> str:
+def handle_accept_visual_prompt(mcq_id: Optional[int], visual_prompt: str) -> Tuple[str, str, bool]:
+    """Persist the latest visual prompt for the stored MCQ and echo back the saved text."""
     if not mcq_id:
-        return "Accept the MCQ first."
+        return "Accept the MCQ first.", visual_prompt, False
+
+    prompt_text = visual_prompt.strip()
     db = SessionLocal()
     try:
         mcq = db.query(MCQRecord).filter(MCQRecord.id == mcq_id).first()
         if not mcq:
-            return "MCQ not found."
-        mcq.visual_prompt = visual_prompt.strip()
+            return "MCQ not found.", visual_prompt, False
+
+        mcq.visual_prompt = prompt_text
         db.commit()
-        return "Visual prompt saved to database."
+        return f"Visual prompt saved for MCQ {mcq_id}.", prompt_text, True
     finally:
         db.close()
+
+
+def load_stored_mcq_view(mcq_id: Optional[int]) -> Tuple[str, str, str, bool]:
+    """Return formatted displays for the builder once an MCQ is persisted."""
+    if not mcq_id:
+        return (
+            "*Generate an MCQ draft to begin.*",
+            "*Triplet details will appear here.*",
+            "",
+            False,
+        )
+
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(MCQRecord, Source, Triplet)
+            .join(Source, MCQRecord.source_id == Source.id)
+            .outerjoin(Triplet, MCQRecord.triplet_id == Triplet.id)
+            .filter(MCQRecord.id == mcq_id)
+            .first()
+        )
+        if not record:
+            return (
+                "*Stored MCQ could not be found.*",
+                "*Triplet details unavailable.*",
+                "",
+                False,
+            )
+
+        mcq, source, triplet = record
+        mcq_html = format_original_mcq(mcq, source, triplet) if source else "*Source metadata missing.*"
+        if triplet:
+            triplet_md = _format_triplets_markdown(
+                [
+                    {
+                        "subject": triplet.subject,
+                        "action": triplet.action,
+                        "object": triplet.object,
+                        "relation": triplet.relation,
+                    }
+                ]
+            )
+        else:
+            triplet_md = "*No triplet stored for this MCQ.*"
+
+        saved_flag = bool(mcq.visual_prompt)
+        return mcq_html, triplet_md, mcq.visual_prompt or "", saved_flag
+    finally:
+        db.close()
+
+
+def _visual_prompt_button_state(saved: bool) -> gr.Button:
+    """Return a button update reflecting whether the visual prompt is saved."""
+    if saved:
+        return gr.update(value="Visual Prompt Saved", interactive=False, variant="secondary")
+    return gr.update(value="Accept Visual Prompt", interactive=True, variant="primary")
 
 
 def _list_stored_mcqs(page: int = 1, page_size: int = 10, query: Optional[str] = None) -> Tuple[List[Tuple[MCQRecord, Source, Optional[Triplet]]], int]:
@@ -1371,7 +1427,11 @@ async def handle_request_update(update_request: str, mcq_id_state: int, model_id
         return f"Error: {e}"
 
 
-def handle_generate_image(visual_prompt: str, image_size: str, mcq_id: Optional[int] = None) -> Tuple[gr.Image, gr.Textbox, gr.Textbox]:
+def handle_generate_image(
+    visual_prompt: str,
+    image_size: str,
+    mcq_id: Optional[int] = None,
+) -> Tuple[gr.Image, gr.Textbox, gr.Textbox, gr.Button]:
     """Generate an image using Gemini from the provided prompt."""
     prompt = (visual_prompt or "").strip()
     if not prompt:
@@ -1379,6 +1439,7 @@ def handle_generate_image(visual_prompt: str, image_size: str, mcq_id: Optional[
             gr.update(visible=False, value=None),
             gr.update(value=image_size or DEFAULT_IMAGE_DIMENSION, visible=True),
             gr.update(value="Provide a visual prompt before generating an image.", visible=True),
+            gr.update(visible=False),
         )
 
     size_value = (image_size or "").strip() or DEFAULT_IMAGE_DIMENSION
@@ -1388,6 +1449,7 @@ def handle_generate_image(visual_prompt: str, image_size: str, mcq_id: Optional[
             gr.update(visible=False, value=None),
             gr.update(value=size_value, visible=True),
             gr.update(value=result.message, visible=True),
+            gr.update(visible=False),
         )
 
     try:
@@ -1400,29 +1462,43 @@ def handle_generate_image(visual_prompt: str, image_size: str, mcq_id: Optional[
             gr.update(visible=False, value=None),
             gr.update(value=size_value, visible=True),
             gr.update(value="Image data returned in an unexpected format.", visible=True),
+            gr.update(visible=False),
         )
 
     return (
         gr.update(value=image, visible=True),
         gr.update(value=result.size_used or size_value, visible=True),
         gr.update(value="Image generated successfully. Click 'Accept Image' to save.", visible=True),
+        gr.update(visible=True),
     )
 
 
-def handle_accept_image(mcq_id: Optional[int]) -> Tuple[str, gr.Image]:
+def handle_accept_image(mcq_id: Optional[int]) -> Tuple[str, gr.Image, gr.Button]:
     """Accept and save the generated image to media folder and update database."""
     if not mcq_id:
-        return "No MCQ selected. Accept an MCQ first.", gr.update(visible=False, value=None)
+        return (
+            "No MCQ selected. Accept an MCQ first.",
+            gr.update(visible=False, value=None),
+            gr.update(visible=False),
+        )
     
     image_bytes = pending_image_cache.get(mcq_id)
     if not image_bytes:
-        return "No image generated yet. Generate an image first.", gr.update(visible=False, value=None)
+        return (
+            "No image generated yet. Generate an image first.",
+            gr.update(visible=False, value=None),
+            gr.update(visible=False),
+        )
     
     db = SessionLocal()
     try:
         mcq = db.query(MCQRecord).filter(MCQRecord.id == mcq_id).first()
         if not mcq:
-            return "MCQ not found.", gr.update(visible=False, value=None)
+            return (
+                "MCQ not found.",
+                gr.update(visible=False, value=None),
+                gr.update(visible=False),
+            )
         
         # Save image to media folder
         image_path = save_image(mcq_id, image_bytes)
@@ -1438,9 +1514,17 @@ def handle_accept_image(mcq_id: Optional[int]) -> Tuple[str, gr.Image]:
         image_file = get_image_path(mcq_id)
         if image_file and image_file.exists():
             image = Image.open(image_file)
-            return f"Image saved to {image_path}", gr.update(value=image, visible=True)
+            return (
+                f"Image saved to {image_path}",
+                gr.update(value=image, visible=True),
+                gr.update(visible=False),
+            )
         else:
-            return f"Image saved to {image_path}", gr.update(visible=False, value=None)
+            return (
+                f"Image saved to {image_path}",
+                gr.update(visible=False, value=None),
+                gr.update(visible=False),
+            )
     finally:
         db.close()
 
@@ -1658,13 +1742,13 @@ def _legacy_create_interface():
                         image_size_input = gr.Textbox(
                             label="Image Size (pixels)",
                             value=DEFAULT_IMAGE_DIMENSION,
-                            placeholder="e.g., 300x300 (default)",
+                            placeholder="e.g., 512x512 (default)",
                         )
                         generate_image_btn = gr.Button("Generate Image", variant="primary")
 
                         gr.Markdown("---")
                         gr.Markdown("### Generated Image")
-                        image_display = gr.Image(label="Generated Image", visible=False)
+                        image_display = gr.Image(label="Generated Image", visible=True, type="pil")
                         image_action_status = gr.Textbox(label="Image Action Status", interactive=False, visible=False)
 
                         gr.Markdown("---")
@@ -1722,19 +1806,13 @@ def _legacy_create_interface():
                 generate_image_btn.click(
                     fn=lambda prompt, size, mcq_id: handle_generate_image(prompt, size, mcq_id),
                     inputs=[visual_prompt_display, image_size_input, mcq_id_state],
-                    outputs=[image_display, image_size_input, image_action_status]
-                ).then(
-                    fn=lambda: gr.update(visible=True),
-                    outputs=accept_image_btn
+                    outputs=[image_display, image_size_input, image_action_status, accept_image_btn],
                 )
                 
                 accept_image_btn.click(
                     fn=lambda mcq_id: handle_accept_image(mcq_id),
                     inputs=mcq_id_state,
-                    outputs=[image_action_status, image_display]
-                ).then(
-                    fn=lambda: gr.update(visible=False),
-                    outputs=accept_image_btn
+                    outputs=[image_action_status, image_display, accept_image_btn],
                 )
 
                 request_update_btn.click(
@@ -1906,6 +1984,7 @@ def create_interface():
                         mcq_display = gr.Markdown(value="*Generate an MCQ draft to begin.*", elem_id="mcq_preview")
                         triplet_display = gr.Markdown(value="*Triplet details will appear here.*")
                         mcq_id_state = gr.State(None)
+                        visual_prompt_saved_state = gr.State(False)
 
                         gr.Markdown("---")
                         gr.Markdown("### Visual Prompt")
@@ -1924,66 +2003,104 @@ def create_interface():
                         image_size_input = gr.Textbox(
                             label="Image Size (pixels)",
                             value=DEFAULT_IMAGE_DIMENSION,
-                            placeholder="e.g., 300x300 (default)",
+                            placeholder="e.g., 512x512 (default)",
                         )
                         generate_image_btn = gr.Button("Generate Image", variant="secondary")
                         accept_image_btn = gr.Button("Accept Image", variant="primary", visible=False)
 
-                        image_display = gr.Image(label="Generated Image", visible=False)
+                        image_display = gr.Image(label="Generated Image", visible=False, type="pil")
                         image_action_status = gr.Textbox(label="Image Status", interactive=False, visible=False)
-                        accept_image_btn = gr.Button("Accept Image", variant="primary", visible=False)
 
                 refresh_pending_articles_btn.click(
                     fn=load_pending_articles_dropdown,
                     outputs=[pending_article_dropdown, builder_article_status]
                 )
 
-                generate_mcq_btn.click(
+                generate_event = generate_mcq_btn.click(
                     fn=generate_mcq_for_pending_article,
                     inputs=[pending_article_dropdown, llm_model_state],
                     outputs=[mcq_display, visual_prompt_display, triplet_display]
                 )
+                generate_event = generate_event.then(
+                    fn=lambda: False,
+                    outputs=visual_prompt_saved_state
+                )
+                generate_event.then(
+                    fn=_visual_prompt_button_state,
+                    inputs=visual_prompt_saved_state,
+                    outputs=accept_visual_prompt_btn
+                )
 
-                apply_feedback_btn.click(
+                feedback_event = apply_feedback_btn.click(
                     fn=apply_mcq_feedback,
                     inputs=[pending_article_dropdown, mcq_feedback_input, llm_model_state],
                     outputs=[mcq_display, visual_prompt_display, triplet_display]
                 )
+                feedback_event = feedback_event.then(
+                    fn=lambda: False,
+                    outputs=visual_prompt_saved_state
+                )
+                feedback_event.then(
+                    fn=_visual_prompt_button_state,
+                    inputs=visual_prompt_saved_state,
+                    outputs=accept_visual_prompt_btn
+                )
 
-                accept_mcq_btn.click(
+                accept_mcq_event = accept_mcq_btn.click(
                     fn=lambda choice, prompt: handle_accept_mcq(choice, prompt),
                     inputs=[pending_article_dropdown, visual_prompt_display],
                     outputs=[builder_article_status, mcq_id_state]
-                ).then(
+                )
+                accept_mcq_event = accept_mcq_event.then(
                     fn=refresh_pending_default,
                     outputs=[pending_display, pending_page_state, pending_info]
-                ).then(
+                )
+                accept_mcq_event = accept_mcq_event.then(
                     fn=load_pending_articles_dropdown,
                     outputs=[pending_article_dropdown, builder_article_status]
                 )
+                accept_mcq_event = accept_mcq_event.then(
+                    fn=load_stored_mcq_view,
+                    inputs=mcq_id_state,
+                    outputs=[mcq_display, triplet_display, visual_prompt_display, visual_prompt_saved_state]
+                )
+                accept_mcq_event.then(
+                    fn=_visual_prompt_button_state,
+                    inputs=visual_prompt_saved_state,
+                    outputs=accept_visual_prompt_btn
+                )
 
-                accept_visual_prompt_btn.click(
+                visual_prompt_display.change(
+                    fn=lambda _: False,
+                    inputs=visual_prompt_display,
+                    outputs=visual_prompt_saved_state
+                ).then(
+                    fn=_visual_prompt_button_state,
+                    inputs=visual_prompt_saved_state,
+                    outputs=accept_visual_prompt_btn
+                )
+
+                accept_visual_prompt_event = accept_visual_prompt_btn.click(
                     fn=lambda mcq_id, prompt: handle_accept_visual_prompt(mcq_id, prompt),
                     inputs=[mcq_id_state, visual_prompt_display],
-                    outputs=builder_article_status
+                    outputs=[builder_article_status, visual_prompt_display, visual_prompt_saved_state]
+                )
+                accept_visual_prompt_event.then(
+                    fn=_visual_prompt_button_state,
+                    inputs=visual_prompt_saved_state,
+                    outputs=accept_visual_prompt_btn
                 )
 
                 generate_image_btn.click(
                     fn=lambda prompt, size, mcq_id: handle_generate_image(prompt, size, mcq_id),
                     inputs=[visual_prompt_display, image_size_input, mcq_id_state],
-                    outputs=[image_display, image_size_input, image_action_status]
-                ).then(
-                    fn=lambda: gr.update(visible=True),
-                    outputs=accept_image_btn
+                    outputs=[image_display, image_size_input, image_action_status, accept_image_btn],
                 )
                 
                 accept_image_btn.click(
                     fn=lambda mcq_id: handle_accept_image(mcq_id),
                     inputs=mcq_id_state,
-                    outputs=[image_action_status, image_display]
-                ).then(
-                    fn=lambda: gr.update(visible=False),
-                    outputs=accept_image_btn
+                    outputs=[image_action_status, image_display, accept_image_btn],
                 )
 
             # Tab 3: Knowledge Base

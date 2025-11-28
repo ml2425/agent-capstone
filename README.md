@@ -14,18 +14,19 @@ Clinical educators need reliable MCQs tied to real literature. Traditional workf
 ## Current Architecture (High-Level)
 
 ```
-Tab 1 (Source Intake)  -> Pending queue (SQLite + session cache)
-Tab 2 (MCQ Builder)    -> LLM calls (ChatGPT4o+Tavily or Gemini+Google)
-Tab 3 (Knowledge Base) -> Read-only search over approved MCQs
+Tab 1 (Source Intake)  -> Pending queue (SQLite)
+Tab 2 (MCQ Builder)    -> Direct Gemini API calls (bypasses ADK for MCQ generation)
+Tab 3 (Knowledge Base) -> Read-only search with pagination, export, and image display
 ```
 
 Behind the scenes:
 
-1. **LLM Manager** keeps provider/tool pairings safe (ChatGPT ↔ Tavily, Gemini ↔ Google Search).
-2. **Sequential Agent Pipeline** (Google ADK) handles on-demand MCQ + triplet extraction.
-3. **Database Session Service** keeps UI interactions stateful across restarts.
-4. **SQLite** stores sources, pending queue, triplets, MCQs, and visual prompts.
-5. **Gradio UI** orchestrates HITL review (no hidden threads or background processing).
+1. **LLM Manager** manages provider configurations (Gemini 2.5 Flash Lite default, ChatGPT 4o mini optional).
+2. **Direct Gemini API** (`gemini_mcq_service.py`) generates MCQs with triplets and visual prompts (bypasses ADK runner for this workflow).
+3. **Gemini Imagen API** (`gemini_image_service.py`) generates images from visual prompts.
+4. **Media Service** stores images in `media/` folder with paths in database.
+5. **SQLite** stores sources, pending queue, triplets, MCQs, visual prompts, and image paths.
+6. **Gradio UI** orchestrates HITL review with in-memory caching for MCQ drafts before persistence.
 
 ## What’s Implemented Right Now
 
@@ -36,18 +37,27 @@ Behind the scenes:
 
 - **Tab 2 – MCQ Builder**
   - Dropdown lists every pending article (title + year + PMID/file ID).
-  - “Generate MCQ Draft” makes a single pipeline call:
+  - "Generate MCQ Draft" calls Gemini API directly to return:
     - MCQ (stem/question/5 options/correct index)
     - Optimized visual prompt
-    - Supporting SNOMED-style triplets
-  - Optional reviewer feedback regenerates the draft in place.
-  - “Accept MCQ” persists both MCQ + triplets (and removes article from queue).
-  - “Accept Visual Prompt” ties the final text prompt to the stored MCQ.
+    - Supporting SNOMED-style triplets (subject-action-object-relation)
+  - Reviewer feedback input allows regeneration with context.
+  - "Accept MCQ" persists MCQ + triplets to database (removes article from pending queue).
+  - Visual prompt can be edited before acceptance.
+  - "Generate Image" creates image from visual prompt (default 300x300).
+  - "Accept Image" saves image to `media/` folder and stores path in database.
 
 - **Tab 3 – Knowledge Base**
-  - Simple search bar (PMID, filename hash, title, or question text).
-  - Displays MCQ text, chosen answer, and stored visual prompt.
-  - Useful for auditing what’s already approved.
+  - Default view shows 10 most recent MCQs with pagination (Prev/Next).
+  - Search by PMID, title, authors, year, filename, or question text.
+  - Click MCQ ID to view full details:
+    - Complete MCQ with options and correct answer
+    - Source information (title, authors, year, PMID)
+    - Associated SNOMED-style triplet with context sentences
+    - Visual prompt
+    - Image thumbnail (if available)
+  - Export options: Copy as JSON or plain text.
+  - "Open in Builder" adds source back to pending queue for editing.
 
 ## What’s Next
 
@@ -102,67 +112,42 @@ Questions or ideas? Drop them in the issue tracker and reference the relevant ta
 - **[Pydantic](https://docs.pydantic.dev/)** - Data validation and settings management
 
 ### LLM Providers
-- **ChatGPT 4o mini** (default) – OpenAI GPT-4o mini via custom OpenAI LLM wrapper. Uses Tavily Search for distractors.
-- **Gemini 2.5 Flash Lite** (optional) – Google Gemini 2.5 Flash Lite selectable from the UI. Uses Google Search for distractors.
+- **Gemini 2.5 Flash Lite** (default) – Direct API calls via `google.genai` for MCQ generation and image prompts. Used for core MCQ workflow.
+- **ChatGPT 4o mini** (optional) – OpenAI GPT-4o mini via custom OpenAI LLM wrapper. Available for future ADK-based workflows.
 
 ### Database
 - **SQLite** - Persistent storage for sources, triplets, MCQs, and sessions
 
-## Google ADK Features Used
+## Implementation Approach
 
-This project implements **5 Google ADK features** (exceeding the 4+ requirement):
+### Current Architecture: Hybrid ADK + Direct API
 
-### 1. SequentialAgent Orchestration  **CORE**
-**Location:** `app/agents/pipeline.py`
+The application uses a **hybrid approach** combining Google ADK for orchestration capabilities with direct API calls for core MCQ generation:
 
-Deterministic pipeline ensuring provenance and triplet IDs survive every hop:
-```
-SourceIngestionAgent → FactExtractionAgent → KBManagementAgent → 
-MCQGenerationAgent → VisualRefinerAgent
-```
+1. **Direct Gemini API** (`app/services/gemini_mcq_service.py`)
+   - Bypasses ADK runner for MCQ generation workflow
+   - Direct calls to `google.genai.Client` for faster, more reliable responses
+   - Returns structured JSON with MCQ, triplets, and visual prompts
+   - Uses Pydantic-style JSON schema enforcement in prompts
 
-**Implementation:** Each agent passes structured data via `output_key`, ensuring predictable data handoff and auditable provenance.
+2. **Gemini Imagen API** (`app/services/gemini_image_service.py`)
+   - Direct image generation via `imagen-3.0-generate` model
+   - Configurable image sizes (default 300x300)
+   - Returns base64-encoded image bytes
 
-### 2. LoopAgent QA Wrapper  **CORE**
-**Location:** `app/agents/mcq_refinement.py`
+3. **Google ADK** (Available but not primary for MCQ generation)
+   - `app/agents/pipeline.py` contains SequentialAgent definitions
+   - `app/core/runner.py` provides ADK runner integration
+   - Used for future extensibility and complex orchestration needs
 
-Iterative MCQ refinement before human review:
-- **MCQWriter** generates initial MCQ
-- **MCQCritic** reviews quality, provenance, clinical accuracy
-- **MCQRefiner** improves based on critique
-- **Max 3 iterations** or exits when critic returns "APPROVED"
+### Why Direct API?
 
-**Impact:** Reduces human review load by pre-filtering low-quality MCQs.
+- **Reliability**: Gemini 2.5 Flash Lite has tool-calling limitations with ADK's function calling style
+- **Speed**: Direct API calls are faster for simple request-response patterns
+- **Control**: Full control over prompt structure and JSON schema enforcement
+- **Simplicity**: Avoids async generator/coroutine complexity in Gradio event handlers
 
-### 3. DatabaseSessionService (Persistent Sessions)  **CORE**
-**Location:** `app/core/session.py`
-
-Persistent session management across app restarts:
-- Stores: selected LLM model, ingested sources, pending triplets, MCQs in review
-- **Auto-restores last session** on app restart
-- Maintains state across UI interactions
-
-**Impact:** Users can resume work without re-uploading sources or losing context.
-
-### 4. Context Compaction  **EFFICIENCY**
-**Location:** `app/core/app.py`
-
-Manages token usage in long sessions:
-- Compacts every **5 turns**
-- Keeps **2 previous turns** overlap
-- Prevents context bloat while preserving recent context
-
-**Impact:** Enables long sessions with multiple sources/MCQs without token limit issues.
-
-### 5. Built-in Tools (Google Search) **ENHANCEMENT**
-**Location:** `app/agents/pipeline.py` (MCQGenerationAgent)
-
-Fallback for distractor generation:
-- When KB doesn't return enough plausible swap triplets
-- Uses `google_search` tool to find medically plausible alternatives
-- Ensures distractors remain factually true in isolation but incorrect for specific question
-
-**Impact:** Maintains high-quality distractors even when knowledge base coverage is thin.
+See `plan/docs/tips.md` for detailed technical decisions and lessons learned.
 
 ## Architecture
 
@@ -278,21 +263,24 @@ The Gradio UI will be available at `http://localhost:7860`
    - Edit or regenerate the visual prompt before accepting it into the database
 
 3. **Knowledge Base (Tab 3)**
-   - Search stored MCQs by PMID, filename, or title
-   - Review the accepted MCQ, options, and saved visual prompt at any time
+   - Browse 10 most recent MCQs with pagination
+   - Search by PMID, title, authors, year, filename, or question text
+   - View detailed MCQ information including triplets and images
+   - Export MCQs as JSON or text
+   - Re-open MCQs in Builder for editing
 
-4. **MCQ Refinement**
-   - Request updates from LLM
-   - Approve/Reject final MCQ
-   - Optional: Generate image from visual prompt
+4. **Image Generation**
+   - Generate images from visual prompts (default 300x300)
+   - Preview before accepting
+   - Images saved to `media/` folder with paths in database
 
 ## Project Structure
 
 ```
 agent-capstone/
 ├── app/
-│   ├── agents/              # Google ADK agents
-│   │   ├── pipeline.py      # SequentialAgent pipeline
+│   ├── agents/              # Google ADK agents (available for future use)
+│   │   ├── pipeline.py      # SequentialAgent pipeline definitions
 │   │   └── mcq_refinement.py # LoopAgent for refinement
 │   ├── core/                # Core configuration
 │   │   ├── app.py          # App with context compaction
@@ -301,19 +289,23 @@ agent-capstone/
 │   │   ├── llm_manager.py  # Dataclass-driven LLM registry + fallback
 │   │   └── openai_llm.py   # Custom BaseLlm wrapper for ChatGPT 4o mini
 │   ├── db/                  # Database layer
-│   │   ├── models.py        # SQLAlchemy models
+│   │   ├── models.py        # SQLAlchemy models (Source, Triplet, MCQRecord, PendingSource)
 │   │   └── database.py      # Database setup
 │   ├── services/            # Business logic
-│   │   ├── pubmed_service.py
-│   │   ├── ingestion_service.py
-│   │   └── kb_service.py
+│   │   ├── pubmed_service.py      # PubMed search via BioPython
+│   │   ├── ingestion_service.py  # Source registration (PubMed/PDF)
+│   │   ├── kb_service.py          # Knowledge base operations
+│   │   ├── gemini_mcq_service.py  # Direct Gemini API for MCQ generation
+│   │   ├── gemini_image_service.py # Direct Gemini Imagen API
+│   │   └── media_service.py       # Image storage in media/ folder
 │   ├── tools/               # Custom tools for agents
 │   │   ├── schema_validator.py
 │   │   ├── kb_tools.py
 │   │   ├── provenance_tools.py
-│   │   └── pubmed_tools.py
+│   │   ├── pubmed_tools.py
+│   │   └── tavily_search.py
 │   └── ui/                  # Gradio UI
-│       └── gradio_app.py
+│       └── gradio_app.py    # Main UI with Tab 1 (Intake), Tab 2 (Builder), Tab 3 (KB)
 ├── plan/                    # Planning documents (not tracked)
 ├── app.py                   # Main entry point
 ├── requirements.txt         # Python dependencies
@@ -333,11 +325,11 @@ agent-capstone/
 - **Visual Prompt Editing**: Edit optimized visual prompts before image generation
 - **Fallback Approvals**: Zero-triplet proposals stay queued in the UI until explicitly approved
 
-### AutoTripletFilter & Auto MCQ
-- **Auto filtering**: Articles that yield zero verified triplets are hidden (with fallback MCQs queued for approval)
-- **Duplicate-aware acceptance**: Triplets matching existing KB entries auto-accept to minimize reviewer load
-- **Auto MCQ generation**: Each verified triplet immediately spawns an MCQ + visual prompt so reviewers focus on approval, not orchestration
-- **Fallback queue**: Zero-triplet sources spawn a single MCQ + triplet that lives in the Triplet tab until approved or discarded
+### On-Demand Generation
+- **No auto-processing**: Articles are queued without LLM calls until user explicitly requests MCQ generation
+- **In-memory caching**: MCQ drafts stored in `pending_mcq_cache` until accepted
+- **Session-persistent**: Pending articles persist in database across app restarts
+- **Iterative refinement**: Reviewer feedback regenerates MCQ with context preservation
 
 ### Quality Assurance
 - **Schema Validation**: Triplets validated against medical ontology

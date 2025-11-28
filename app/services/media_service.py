@@ -40,3 +40,5 @@ def delete_image(mcq_id: int, extension: str = "png") -> bool:
         return True
     return False
 
+
+

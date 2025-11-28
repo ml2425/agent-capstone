@@ -816,8 +816,6 @@ def generate_mcq_for_pending_article(source_choice: str, model_id: str) -> Tuple
     source_id = _parse_source_choice(source_choice)
     if not source_id:
         return "*Select a pending article first.*", "", ""
-    if model_id and "gemini" not in model_id.lower():
-        return "Please switch the LLM dropdown to Gemini for this workflow.", "", ""
 
     db = SessionLocal()
     try:
@@ -826,7 +824,7 @@ def generate_mcq_for_pending_article(source_choice: str, model_id: str) -> Tuple
             return "Article not found.", "", ""
 
         article_payload = _source_to_article_payload(source)
-        result = generate_mcq_with_triplets(article_payload)
+        result = generate_mcq_with_triplets(article_payload, model_id=model_id)
         if not result.success or not result.payload:
             return result.message or "MCQ generation failed. Please retry.", "", ""
 
@@ -861,8 +859,6 @@ def apply_mcq_feedback(source_choice: str, feedback: str, model_id: str) -> Tupl
         return "*Select a pending article first.*", "", ""
     if not feedback.strip():
         return "Provide feedback before requesting an update.", "", ""
-    if model_id and "gemini" not in model_id.lower():
-        return "Please switch the LLM dropdown to Gemini for this workflow.", "", ""
 
     db = SessionLocal()
     try:
@@ -877,7 +873,7 @@ def apply_mcq_feedback(source_choice: str, feedback: str, model_id: str) -> Tupl
             "triplets": pending_mcq_cache.get(source_id, {}).get("triplets", []),
             "visual_prompt": pending_mcq_cache.get(source_id, {}).get("visual", {}).get("optimized_visual_prompt", ""),
         }
-        result = regenerate_mcq_with_feedback(article_payload, regen_payload, feedback)
+        result = regenerate_mcq_with_feedback(article_payload, regen_payload, feedback, model_id=model_id)
         if not result.success or not result.payload:
             return result.message or "MCQ regeneration failed. Please retry.", "", ""
 
@@ -1529,7 +1525,7 @@ async def handle_request_update(update_request: str, mcq_id_state: int, model_id
         return f"Error: {e}"
 
 
-def handle_show_image(mcq_id: Optional[int]) -> Tuple[gr.Image, str]:
+def handle_show_image(mcq_id: Optional[int], model_id: Optional[str] = None) -> Tuple[gr.Image, str]:
     """Generate image if needed, then load and display from media folder."""
     if not mcq_id:
         return gr.update(visible=False, value=None), "No MCQ selected."
@@ -1549,8 +1545,8 @@ def handle_show_image(mcq_id: Optional[int]) -> Tuple[gr.Image, str]:
             if not visual_prompt:
                 return gr.update(visible=False, value=None), "No visual prompt found. Accept a visual prompt first."
             
-            # Generate image
-            result = generate_image_from_prompt(visual_prompt, DEFAULT_IMAGE_DIMENSION)
+            # Generate image with model_id support
+            result = generate_image_from_prompt(visual_prompt, DEFAULT_IMAGE_DIMENSION, model_id=model_id)
             if not result.success or not result.image_bytes:
                 return gr.update(visible=False, value=None), f"Error generating image: {result.message}"
             
@@ -1868,8 +1864,8 @@ def create_interface():
                 )
 
                 show_image_btn.click(
-                    fn=lambda mcq_id: handle_show_image(mcq_id),
-                    inputs=mcq_id_state,
+                    fn=lambda mcq_id, model_id: handle_show_image(mcq_id, model_id),
+                    inputs=[mcq_id_state, llm_model_state],
                     outputs=[image_display, image_status]
                 )
                 

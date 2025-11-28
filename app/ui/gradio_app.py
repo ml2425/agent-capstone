@@ -1640,7 +1640,7 @@ def create_interface():
                             lines=2
                         )
                         apply_feedback_btn = gr.Button("Apply Feedback", variant="secondary")
-                        accept_mcq_btn = gr.Button("Accept MCQ", variant="primary")
+                        accept_mcq_btn = gr.Button("Accept MCQ (takes a few seconds)", variant="primary")
 
                         mcq_display = gr.Markdown(value="*Generate an MCQ draft to begin.*", elem_id="mcq_preview")
                         triplet_display = gr.Markdown(value="*Triplet details will appear here.*")
@@ -1660,11 +1660,11 @@ def create_interface():
                             value="",
                             interactive=False
                         )
-                        accept_visual_prompt_btn = gr.Button("Accept Visual Prompt", variant="primary")
+                        accept_visual_prompt_btn = gr.Button("Accept Visual Prompt (takes a few seconds)", variant="primary")
                         
                         gr.Markdown("---")
                         gr.Markdown("### Image (Auto-generated on Accept)")
-                        show_image_btn = gr.Button("Show Image", variant="secondary")
+                        show_image_btn = gr.Button("Show Image (click once to load, second time to display 😞)", variant="secondary")
                         delete_image_btn = gr.Button("Delete Image", variant="secondary")
                         image_display = gr.Image(label="Generated Image", visible=False, type="pil")
                         image_status = gr.Textbox(label="Image Status", interactive=False, visible=True)

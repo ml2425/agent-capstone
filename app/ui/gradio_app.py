@@ -1432,7 +1432,15 @@ def handle_generate_image(
     image_size: str,
     mcq_id: Optional[int] = None,
 ) -> Tuple[gr.Image, gr.Textbox, gr.Textbox, gr.Button]:
-    """Generate an image using Gemini from the provided prompt."""
+    """Draft an image but delay preview until the user confirms."""
+    if not mcq_id:
+        return (
+            gr.update(visible=False, value=None),
+            gr.update(value=image_size or DEFAULT_IMAGE_DIMENSION, visible=True),
+            gr.update(value="Accept the MCQ before generating an image.", visible=True),
+            gr.update(visible=False),
+        )
+
     prompt = (visual_prompt or "").strip()
     if not prompt:
         return (
@@ -1452,29 +1460,17 @@ def handle_generate_image(
             gr.update(visible=False),
         )
 
-    try:
-        image = Image.open(BytesIO(result.image_bytes))
-        # Store image bytes in cache if mcq_id is provided
-        if mcq_id:
-            pending_image_cache[mcq_id] = result.image_bytes
-    except Exception:
-        return (
-            gr.update(visible=False, value=None),
-            gr.update(value=size_value, visible=True),
-            gr.update(value="Image data returned in an unexpected format.", visible=True),
-            gr.update(visible=False),
-        )
-
+    pending_image_cache[mcq_id] = result.image_bytes
     return (
-        gr.update(value=image, visible=True),
+        gr.update(visible=False, value=None),
         gr.update(value=result.size_used or size_value, visible=True),
-        gr.update(value="Image generated successfully. Click 'Accept Image' to save.", visible=True),
+        gr.update(value="Image draft ready. Click 'Show Image' to store and preview.", visible=True),
         gr.update(visible=True),
     )
 
 
 def handle_accept_image(mcq_id: Optional[int]) -> Tuple[str, gr.Image, gr.Button]:
-    """Accept and save the generated image to media folder and update database."""
+    """Persist the drafted image and reveal the preview."""
     if not mcq_id:
         return (
             "No MCQ selected. Accept an MCQ first.",
@@ -1500,17 +1496,12 @@ def handle_accept_image(mcq_id: Optional[int]) -> Tuple[str, gr.Image, gr.Button
                 gr.update(visible=False),
             )
         
-        # Save image to media folder
         image_path = save_image(mcq_id, image_bytes)
-        
-        # Update database
         mcq.image_url = image_path
         db.commit()
         
-        # Remove from cache
         pending_image_cache.pop(mcq_id, None)
         
-        # Load and return the saved image
         image_file = get_image_path(mcq_id)
         if image_file and image_file.exists():
             image = Image.open(image_file)
@@ -1519,12 +1510,11 @@ def handle_accept_image(mcq_id: Optional[int]) -> Tuple[str, gr.Image, gr.Button
                 gr.update(value=image, visible=True),
                 gr.update(visible=False),
             )
-        else:
-            return (
-                f"Image saved to {image_path}",
-                gr.update(visible=False, value=None),
-                gr.update(visible=False),
-            )
+        return (
+            f"Image saved to {image_path}",
+            gr.update(visible=False, value=None),
+            gr.update(visible=False),
+        )
     finally:
         db.close()
 
@@ -2006,7 +1996,7 @@ def create_interface():
                             placeholder="e.g., 512x512 (default)",
                         )
                         generate_image_btn = gr.Button("Generate Image", variant="secondary")
-                        accept_image_btn = gr.Button("Accept Image", variant="primary", visible=False)
+                        accept_image_btn = gr.Button("Show Image", variant="primary", visible=False)
 
                         image_display = gr.Image(label="Generated Image", visible=False, type="pil")
                         image_action_status = gr.Textbox(label="Image Status", interactive=False, visible=False)

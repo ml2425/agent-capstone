@@ -3,6 +3,7 @@ MERGE.md
 docs/BRANCHES.md
 contents/
 plan/
+UNUSED_CODE_CANDIDATES.md
 
 # === Test files ===
 test_readme.md

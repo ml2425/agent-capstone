@@ -6,7 +6,7 @@
 
 **Generate verifiable questions from medical literature (PUBMED search) with provenance tracking**
 
-A production-ready system for generating high-quality, verifiable medical multiple-choice questions (MCQs) using Google Agent Development Kit (ADK) with human-in-the-loop validation.
+A prototype for generating high-quality, verifiable medical multiple-choice questions (MCQs) using Google Agent Development Kit (ADK) with human-in-the-loop validation.
 
 ## Why This Project Exists
 

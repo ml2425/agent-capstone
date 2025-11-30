@@ -1,4 +1,10 @@
-# Verifiable Medical MCQ Generator
+<div align="center">
+  <img src="plan/docs/icon.png" alt="Medical MCQ Writer Agent" width="120"/>
+</div>
+
+# Medical MCQ Writer Agent
+
+**Generate verifiable questions from medical literature (PUBMED search) with provenance tracking**
 
 A production-ready system for generating high-quality, verifiable medical multiple-choice questions (MCQs) using Google Agent Development Kit (ADK) with human-in-the-loop validation.
 
@@ -71,7 +77,13 @@ This project implements 5+ features from the Google Agent Development Kit framew
 
 1. **SequentialAgent Orchestration** - Pipeline of agents (SourceIngestionAgent → FactExtractionAgent → KBManagementAgent → MCQGenerationAgent → VisualRefinerAgent) defined in `app/agents/pipeline.py`. Each agent passes structured data via `output_key` for deterministic data handoff.
 
-2. **Custom Loop for MCQ Refinement (Google ADK Inspired)** - Custom iterative refinement loop inspired by Google ADK LoopAgent pattern, implemented in `app/services/gemini_mcq_service.py`. Provides flexibility for different LLM vendors (Gemini for critique, user's choice for improvement) and fine-grained control over each iteration with explicit error handling. LoopAgent structure defined in `app/agents/mcq_refinement.py` for reference.
+   ![SequentialAgent Pipeline](icons/SequentialOrchestration_GeminiGenerated.png)
+   *Architecture diagram showing the SequentialAgent pipeline with 6 specialized agents and data flow via output_key. Diagram generated using Google Gemini image generation.*
+
+2. **Custom Loop for MCQ Refinement (Google ADK Inspired)** - Custom iterative refinement loop inspired by Google ADK LoopAgent pattern, implemented in `app/services/gemini_mcq_service.py` function `regenerate_mcq_with_loop_refinement()`. Uses Gemini as a critic to review MCQ quality, then the user's chosen LLM (Gemini or ChatGPT) refines the MCQ based on critique, with up to 2 iterations and explicit fallback handling. This custom implementation provides flexibility for different LLM vendors and fine-grained control over each iteration.
+
+   ![Custom Loop Refinement](icons/LoopAgent-GeminiGenerated.png)
+   *Flow diagram showing the iterative critique-refine pattern with Gemini as critic and user's chosen LLM as refiner. Diagram generated using Google Gemini image generation.*
 
 3. **DatabaseSessionService** - Persistent session management using `DatabaseSessionService` with SQLite. Sessions persist across app restarts with automatic restoration. Implemented in `app/core/session.py`.
 
@@ -86,7 +98,7 @@ This project implements 5+ features from the Google Agent Development Kit framew
 
 6. **Built-in Tools** - Google Search tool from ADK used in MCQ generation agent for finding medically plausible distractors when KB coverage is insufficient.
 
-These agents and tools are available in the codebase and can be integrated into workflows via the ADK runner. The current UI uses direct API calls for MCQ generation, but the agent infrastructure is in place for future extensibility.
+**Usage**: The SequentialAgent pipeline is used in the auto-processing workflow (`_auto_process_source()` in `app/ui/gradio_app.py`) for automated source processing. The MCQ Builder tab uses direct API calls for on-demand MCQ generation, providing faster response times and better control over the user experience. Both approaches are fully functional and serve different use cases.
 
 ## Running the App
 
@@ -145,12 +157,16 @@ The application uses a **hybrid approach** combining Google ADK for orchestratio
    - Unknown sections split into paragraph-based chunks (2 paragraphs per chunk)
    - Each chunk becomes a separate Source record, enabling focused MCQ generation
 
-3. **Google ADK** (Available for future workflows)
-   - `app/agents/pipeline.py` contains SequentialAgent definitions
-   - `app/agents/mcq_refinement.py` contains LoopAgent structure (for reference), with custom loop implementation in `app/services/gemini_mcq_service.py`
-   - `app/core/runner.py` provides ADK runner integration
-   - `app/core/app.py` configures context compaction
-   - Used for future extensibility and complex orchestration needs
+3. **Custom Loop Refinement** (`app/services/gemini_mcq_service.py`)
+   - Iterative MCQ improvement using Gemini as critic and user's chosen LLM as refiner
+   - Up to 2 iterations with automatic fallback to direct feedback method
+   - Works with both Gemini and ChatGPT for MCQ generation
+
+4. **Google ADK** (Active in auto-processing workflow)
+   - `app/agents/pipeline.py` contains SequentialAgent definitions (SourceIngestionAgent → FactExtractionAgent → KBManagementAgent → MCQGenerationAgent → VisualRefinerAgent → ZeroTripletFallbackAgent)
+   - `app/core/runner.py` provides ADK runner integration via `run_agent()` function
+   - `app/core/app.py` configures context compaction and session management
+   - Used in `_auto_process_source()` for automated source processing with triplet extraction
 
 ### Why Direct API?
 
@@ -292,9 +308,8 @@ The Gradio UI will be available at `http://localhost:7860`
 ```
 agent-capstone/
 ├── app/
-│   ├── agents/              # Google ADK agents (available for future use)
-│   │   ├── pipeline.py      # SequentialAgent pipeline definitions
-│   │   └── mcq_refinement.py # LoopAgent structure (reference)
+│   ├── agents/              # Google ADK agents
+│   │   └── pipeline.py      # SequentialAgent pipeline definitions (used in auto-processing)
 │   ├── core/                # Core configuration
 │   │   ├── app.py          # App with context compaction
 │   │   ├── session.py      # DatabaseSessionService
@@ -411,6 +426,7 @@ MIT LICENSE
 - **Gradio** for the excellent UI framework
 - **BioPython** for PubMed integration
 - Medical ontology schema based on standard medical knowledge representation
+- **Google Gemini** for image generation used in architecture diagrams
 
 ## References
 

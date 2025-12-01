@@ -1,0 +1,50 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.venv/
+venv/
+env/
+
+# Databases (ephemeral - created fresh)
+*.db
+*.sqlite
+
+# Media (ephemeral - created fresh)
+media/
+
+# Documentation/planning
+plan/
+MERGE.md
+README.md
+*.md
+
+# Environment/secrets
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Lock files (not needed in container)
+uv.lock
+pyproject.toml
+

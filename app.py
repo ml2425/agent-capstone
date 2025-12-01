@@ -2,6 +2,7 @@
 Main Gradio application for Medical MCQ Generator.
 Run with: python app.py
 """
+import os
 import gradio as gr
 from dotenv import load_dotenv
 
@@ -16,6 +17,9 @@ init_db()
 
 if __name__ == "__main__":
     demo = create_interface()
-    demo.launch(server_name="127.0.0.1", server_port=7860, share=False)
+    # Support PORT environment variable for containerized deployments (e.g., Cloud Run)
+    # Falls back to 7860 for local development
+    port = int(os.getenv("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port, share=False)
 
 

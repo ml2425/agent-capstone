@@ -36,5 +36,4 @@ Thumbs.db
 *.log
 
 # === Generated media ===
-# media/  # Now tracked in git
-
+media/

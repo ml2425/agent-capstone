@@ -2,7 +2,14 @@
 MERGE.md
 docs/BRANCHES.md
 contents/
-plan/
+# Exclude most of plan/, but keep schema for app
+plan/docs/
+plan/app/
+plan/framework/
+plan/UI/
+plan/submission_description.md
+plan/schema/schema_examples.md
+# Keep plan/schema/schema.yaml (don't ignore it)
 UNUSED_CODE_CANDIDATES.md
 
 # === Test files ===

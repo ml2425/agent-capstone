@@ -110,6 +110,19 @@ python app.py
 
 The Gradio UI loads at `http://localhost:7860`.
 
+## Docker Deployment
+
+A containerized version of this application is available in the `docker-deployment` branch, which includes:
+- `Dockerfile` for building container images
+- `.dockerignore` for optimized builds
+- `docker_readme.md` with detailed deployment instructions
+
+To use the containerized version:
+1. Switch to the `docker-deployment` branch: `git checkout docker-deployment`
+2. Follow the instructions in `docker_readme.md` for building and deploying
+
+**Note**: The `docker-deployment` branch contains the same application code as `main`, with additional Docker configuration files for containerized deployment.
+
 ## Key Files
 
 - `app/ui/gradio_app.py` – All Gradio blocks + session glue.
